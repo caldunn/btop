@@ -61,6 +61,8 @@ namespace Cpu {
 	//* Search /proc/cpuinfo for a cpu name
 	string get_cpuName();
 
+	void set_e_cores();
+
 	struct Sensor {
 		fs::path path;
 		string label;
@@ -117,6 +119,8 @@ namespace Shared {
 		if (not fs::exists(Cpu::freq_path) or access(Cpu::freq_path.c_str(), R_OK) == -1) Cpu::freq_path.clear();
 		Cpu::current_cpu.core_percent.insert(Cpu::current_cpu.core_percent.begin(), Shared::coreCount, {});
 		Cpu::current_cpu.temp.insert(Cpu::current_cpu.temp.begin(), Shared::coreCount + 1, {});
+		Cpu::current_cpu.e_core.insert(Cpu::current_cpu.e_core.begin(), Shared::coreCount, {});
+		Cpu::set_e_cores();
 		Cpu::core_old_totals.insert(Cpu::core_old_totals.begin(), Shared::coreCount, 0);
 		Cpu::core_old_idles.insert(Cpu::core_old_idles.begin(), Shared::coreCount, 0);
 		Cpu::collect();
@@ -227,6 +231,24 @@ namespace Cpu {
 
 		return name;
 	}
+
+    void set_e_cores() {
+	  // https://www.intel.com/content/www/us/en/developer/articles/guide/12th-gen-intel-core-processor-gamedev-guide.html
+      uint32_t a, b, c, d;
+      asm volatile
+          ("cpuid" : "=a" (a), "=b" (b), "=c" (c), "=d" (d)
+          : "a" (0x07), "c" (0x00));
+      if ((1 &(d >>(15-1))))
+	  {
+		unsigned long c0Hz = std::stoul(readfile("/sys/devices/system/cpu/cpufreq/policy15/cpuinfo_max_freq"));
+		// I believe the E-cores are reported last thus, making it ok to break the loop early.
+		for (int i = Cpu::current_cpu.core_percent.size()-1; i >= 0; i--) {
+		  if (std::stoul(readfile( "/sys/devices/system/cpu/cpufreq/policy" + to_string(i) + "/cpuinfo_max_freq")) == c0Hz)
+			break;
+		  Cpu::current_cpu.e_core.at(i) = true;
+		}
+	  }
+    }
 
 	bool get_sensors() {
 		bool got_cpu = false, got_coretemp = false;

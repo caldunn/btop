@@ -102,7 +102,8 @@ namespace Cpu {
 		};
 		vector<deque<long long>> core_percent;
 		vector<deque<long long>> temp;
-		long long temp_max = 0;
+        vector<bool>             e_core;
+		long long                temp_max = 0;
 		array<float, 3> load_avg;
 	};
 
