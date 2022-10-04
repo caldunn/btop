@@ -35,12 +35,22 @@ tab-size = 4
 #include <btop_config.hpp>
 #include <btop_tools.hpp>
 
-using std::ifstream, std::numeric_limits, std::streamsize, std::round, std::max, std::min;
-using std::clamp, std::string_literals::operator""s, std::cmp_equal, std::cmp_less, std::cmp_greater;
+using std::clamp;
+using std::cmp_equal;
+using std::cmp_greater;
+using std::cmp_less;
+using std::ifstream;
+using std::max;
+using std::min;
+using std::numeric_limits;
+using std::round;
+using std::streamsize;
+
 namespace fs = std::filesystem;
 namespace rng = std::ranges;
-using namespace Tools;
 
+using namespace Tools;
+using namespace std::literals; // for operator""s
 //? --------------------------------------------------- FUNCTIONS -----------------------------------------------------
 
 namespace Cpu {
@@ -50,7 +60,8 @@ namespace Cpu {
 	vector<string> available_sensors = {"Auto"};
 	cpu_info current_cpu;
 	fs::path freq_path = "/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq";
-	bool got_sensors = false, cpu_temp_only = false;
+    bool got_sensors{};     // defaults to false
+    bool cpu_temp_only{};   // defaults to false
 
 	//* Populate found_sensors map
 	bool get_sensors();
@@ -66,9 +77,9 @@ namespace Cpu {
 	struct Sensor {
 		fs::path path;
 		string label;
-		int64_t temp = 0;
-		int64_t high = 0;
-		int64_t crit = 0;
+        int64_t temp{}; // defaults to 0
+        int64_t high{}; // defaults to 0
+        int64_t crit{}; // defaults to 0
 	};
 
 	unordered_flat_map<string, Sensor> found_sensors;
@@ -97,7 +108,7 @@ namespace Shared {
 		if (passwd_path.empty())
 			Logger::warning("Could not read /etc/passwd, will show UID instead of username.");
 
-		coreCount = sysconf(_SC_NPROCESSORS_ONLN);
+		coreCount = sysconf(_SC_NPROCESSORS_CONF);
 		if (coreCount < 1) {
 			coreCount = 1;
 			Logger::warning("Could not determine number of cores, defaulting to 1.");
@@ -148,7 +159,10 @@ namespace Cpu {
 	bool has_battery = true;
 	tuple<int, long, string> current_bat;
 
-	const array<string, 10> time_names = {"user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "guest", "guest_nice"};
+    const array time_names {
+        "user"s, "nice"s, "system"s, "idle"s, "iowait"s,
+        "irq"s, "softirq"s, "steal"s, "guest"s, "guest_nice"s
+    };
 
 	unordered_flat_map<string, long long> cpu_old = {
 			{"totals", 0},
@@ -409,11 +423,14 @@ namespace Cpu {
 	}
 
 	string get_cpuHz() {
-		static int failed = 0;
-		if (failed > 4) return ""s;
+        static int failed{}; // defaults to 0
+
+        if (failed > 4)
+            return ""s;
+
 		string cpuhz;
 		try {
-			double hz = 0.0;
+            double hz{}; // defaults to 0.0
 			//? Try to get freq from /sys/devices/system/cpu/cpufreq/policy first (faster)
 			if (not freq_path.empty()) {
 				hz = stod(readfile(freq_path, "0.0")) / 1000;
@@ -438,7 +455,8 @@ namespace Cpu {
 				}
 			}
 
-			if (hz <= 1 or hz >= 1000000) throw std::runtime_error("Failed to read /sys/devices/system/cpu/cpufreq/policy and /proc/cpuinfo.");
+            if (hz <= 1 or hz >= 1000000)
+                throw std::runtime_error("Failed to read /sys/devices/system/cpu/cpufreq/policy and /proc/cpuinfo.");
 
 			if (hz >= 1000) {
 				if (hz >= 10000) cpuhz = to_string((int)round(hz / 1000)); // Future proof until we reach THz speeds :)
@@ -450,9 +468,10 @@ namespace Cpu {
 
 		}
 		catch (const std::exception& e) {
-			if (++failed < 5) return ""s;
+            if (++failed < 5)
+                return ""s;
 			else {
-				Logger::warning("get_cpuHZ() : " + (string)e.what());
+                Logger::warning("get_cpuHZ() : " + string{e.what()});
 				return ""s;
 			}
 		}
@@ -467,7 +486,9 @@ namespace Cpu {
 		//? Try to get core mapping from /proc/cpuinfo
 		ifstream cpuinfo(Shared::procPath / "cpuinfo");
 		if (cpuinfo.good()) {
-			int cpu, core, n = 0;
+            int cpu{};  // defaults to 0
+            int core{}; // defaults to 0
+            int n{};    // defaults to 0
 			for (string instr; cpuinfo >> instr;) {
 				if (instr == "processor") {
 					cpuinfo.ignore(SSmax, ':');
@@ -675,70 +696,93 @@ namespace Cpu {
 			cread.close();
 
 			//? Get cpu total times for all cores from /proc/stat
+			string cpu_name;
 			cread.open(Shared::procPath / "stat");
-			for (int i = 0; cread.good() and cread.peek() == 'c'; i++) {
-				cread.ignore(SSmax, ' ');
+			int i = 0;
+			for (; i <= Shared::coreCount; i++) {
 
-				//? Expected on kernel 2.6.3> : 0=user, 1=nice, 2=system, 3=idle, 4=iowait, 5=irq, 6=softirq, 7=steal, 8=guest, 9=guest_nice
-				vector<long long> times;
-				long long total_sum = 0;
-
-				for (uint64_t val; cread >> val; total_sum += val) {
-					times.push_back(val);
+				//? Make sure to add zero value for missing core values if at end of file
+				if ((not cread.good() or cread.peek() != 'c') and i < Shared::coreCount) {
+					if (i == 0) throw std::runtime_error("Failed to parse /proc/stat");
+					else cpu.core_percent.at(i-1).push_back(0);
 				}
-				cread.clear();
-				if (times.size() < 4) throw std::runtime_error("Malformatted /proc/stat");
+				else {
+					if (i == 0) cread.ignore(SSmax, ' ');
+					else {
+						cread >> cpu_name;
+						int cpuNum = std::stoi(cpu_name.substr(3));
+						if (cpuNum > Shared::coreCount - 1) throw std::runtime_error("Mismatch betweeen /proc/stat core count and previously detected core count");
+						//? Add zero value for core if core number is missing from /proc/stat
+						while (i - 1 < cpuNum) {
+							cpu.core_percent.at(i-1).push_back(0);
+							if (cpu.core_percent.at(i-1).size() > 40) cpu.core_percent.at(i-1).pop_front();
+							i++;
+						}
+					}
 
-				//? Subtract fields 8-9 and any future unknown fields
-				const long long totals = max(0ll, total_sum - (times.size() > 8 ? std::accumulate(times.begin() + 8, times.end(), 0) : 0));
+					//? Expected on kernel 2.6.3> : 0=user, 1=nice, 2=system, 3=idle, 4=iowait, 5=irq, 6=softirq, 7=steal, 8=guest, 9=guest_nice
+					vector<long long> times;
+					long long total_sum = 0;
 
-				//? Add iowait field if present
-				const long long idles = max(0ll, times.at(3) + (times.size() > 4 ? times.at(4) : 0));
+					for (uint64_t val; cread >> val; total_sum += val) {
+						times.push_back(val);
+					}
+					cread.clear();
+					if (times.size() < 4) throw std::runtime_error("Malformatted /proc/stat");
 
-				//? Calculate values for totals from first line of stat
-				if (i == 0) {
-					const long long calc_totals = max(1ll, totals - cpu_old.at("totals"));
-					const long long calc_idles = max(1ll, idles - cpu_old.at("idles"));
-					cpu_old.at("totals") = totals;
-					cpu_old.at("idles") = idles;
+					//? Subtract fields 8-9 and any future unknown fields
+					const long long totals = max(0ll, total_sum - (times.size() > 8 ? std::accumulate(times.begin() + 8, times.end(), 0) : 0));
 
-					//? Total usage of cpu
-					cpu.cpu_percent.at("total").push_back(clamp((long long)round((double)(calc_totals - calc_idles) * 100 / calc_totals), 0ll, 100ll));
+					//? Add iowait field if present
+					const long long idles = max(0ll, times.at(3) + (times.size() > 4 ? times.at(4) : 0));
 
-					//? Reduce size if there are more values than needed for graph
-					while (cmp_greater(cpu.cpu_percent.at("total").size(), width * 2)) cpu.cpu_percent.at("total").pop_front();
+					//? Calculate values for totals from first line of stat
+					if (i == 0) {
+						const long long calc_totals = max(1ll, totals - cpu_old.at("totals"));
+						const long long calc_idles = max(1ll, idles - cpu_old.at("idles"));
+						cpu_old.at("totals") = totals;
+						cpu_old.at("idles") = idles;
 
-					//? Populate cpu.cpu_percent with all fields from stat
-					for (int ii = 0; const auto& val : times) {
-						cpu.cpu_percent.at(time_names.at(ii)).push_back(clamp((long long)round((double)(val - cpu_old.at(time_names.at(ii))) * 100 / calc_totals), 0ll, 100ll));
-						cpu_old.at(time_names.at(ii)) = val;
+						//? Total usage of cpu
+						cpu.cpu_percent.at("total").push_back(clamp((long long)round((double)(calc_totals - calc_idles) * 100 / calc_totals), 0ll, 100ll));
 
 						//? Reduce size if there are more values than needed for graph
-						while (cmp_greater(cpu.cpu_percent.at(time_names.at(ii)).size(), width * 2)) cpu.cpu_percent.at(time_names.at(ii)).pop_front();
+						while (cmp_greater(cpu.cpu_percent.at("total").size(), width * 2)) cpu.cpu_percent.at("total").pop_front();
 
-						if (++ii == 10) break;
+						//? Populate cpu.cpu_percent with all fields from stat
+						for (int ii = 0; const auto& val : times) {
+							cpu.cpu_percent.at(time_names.at(ii)).push_back(clamp((long long)round((double)(val - cpu_old.at(time_names.at(ii))) * 100 / calc_totals), 0ll, 100ll));
+							cpu_old.at(time_names.at(ii)) = val;
+
+							//? Reduce size if there are more values than needed for graph
+							while (cmp_greater(cpu.cpu_percent.at(time_names.at(ii)).size(), width * 2)) cpu.cpu_percent.at(time_names.at(ii)).pop_front();
+
+							if (++ii == 10) break;
+						}
+						continue;
+					}
+					//? Calculate cpu total for each core
+					else {
+						if (i > Shared::coreCount) break;
+						const long long calc_totals = max(0ll, totals - core_old_totals.at(i-1));
+						const long long calc_idles = max(0ll, idles - core_old_idles.at(i-1));
+						core_old_totals.at(i-1) = totals;
+						core_old_idles.at(i-1) = idles;
+
+						cpu.core_percent.at(i-1).push_back(clamp((long long)round((double)(calc_totals - calc_idles) * 100 / calc_totals), 0ll, 100ll));
 					}
 				}
-				//? Calculate cpu total for each core
-				else {
-					if (i > Shared::coreCount) break;
-					const long long calc_totals = max(0ll, totals - core_old_totals.at(i-1));
-					const long long calc_idles = max(0ll, idles - core_old_idles.at(i-1));
-					core_old_totals.at(i-1) = totals;
-					core_old_idles.at(i-1) = idles;
 
-					cpu.core_percent.at(i-1).push_back(clamp((long long)round((double)(calc_totals - calc_idles) * 100 / calc_totals), 0ll, 100ll));
-
-					//? Reduce size if there are more values than needed for graph
-					if (cpu.core_percent.at(i-1).size() > 40) cpu.core_percent.at(i-1).pop_front();
-
-				}
+				//? Reduce size if there are more values than needed for graph
+				if (cpu.core_percent.at(i-1).size() > 40) cpu.core_percent.at(i-1).pop_front();
 			}
+
+			if (i < Shared::coreCount + 1) throw std::runtime_error("Failed to parse /proc/stat");
 		}
 		catch (const std::exception& e) {
-			Logger::debug("get_cpuHz() : " + (string)e.what());
+            Logger::debug("get_cpuHz() : " + string{e.what()});
 			if (cread.bad()) throw std::runtime_error("Failed to read /proc/stat");
-			else throw std::runtime_error("collect() : " + (string)e.what());
+            else throw std::runtime_error("collect() : " + string{e.what()});
 		}
 
 		if (Config::getB("show_cpu_freq"))
@@ -755,10 +799,10 @@ namespace Cpu {
 }
 
 namespace Mem {
-	bool has_swap = false;
+    bool has_swap{}; // defaults to false
 	vector<string> fstab;
 	fs::file_time_type fstab_time;
-	int disk_ios = 0;
+    int disk_ios{}; // defaults to 0
 	vector<string> last_found;
 	const std::regex zfs_size_regex("^size\\s+\\d\\s+(\\d+)");
 
@@ -1136,14 +1180,14 @@ namespace Mem {
 							while (cmp_greater(disk.io_activity.size(), width * 2)) disk.io_activity.pop_front();
 						}
 					} else {
-						Logger::debug("Error in Mem::collect() : when opening " + (string)disk.stat);
+                        Logger::debug("Error in Mem::collect() : when opening " + string{disk.stat});
 					}
 					diskread.close();
 				}
 				old_uptime = uptime;
 			}
 			catch (const std::exception& e) {
-				Logger::warning("Error in Mem::collect() : " + (string)e.what());
+                Logger::warning("Error in Mem::collect() : " + string{e.what()});
 			}
 		}
 
@@ -1204,7 +1248,13 @@ namespace Mem {
 	bool zfs_collect_pool_total_stats(struct disk_info &disk) {
 		ifstream diskread;
 
-		int64_t bytes_read, bytes_write, io_ticks, bytes_read_total = 0, bytes_write_total = 0, io_ticks_total = 0, objects_read = 0;
+        int64_t bytes_read;
+        int64_t bytes_write;
+        int64_t io_ticks;
+        int64_t bytes_read_total{};     // defaults to 0
+        int64_t bytes_write_total{};    // defaults to 0
+        int64_t io_ticks_total{};       // defaults to 0
+        int64_t objects_read{};         // defaults to 0
 
 		// looking through all files that start with 'objset'
 		for (const auto& file: fs::directory_iterator(disk.stat)) {
@@ -1280,11 +1330,11 @@ namespace Net {
 	net_info empty_net = {};
 	vector<string> interfaces;
 	string selected_iface;
-	int errors = 0;
+    int errors{}; // defaults to 0
 	unordered_flat_map<string, uint64_t> graph_max = { {"download", {}}, {"upload", {}} };
 	unordered_flat_map<string, array<int, 2>> max_count = { {"download", {}}, {"upload", {}} };
-	bool rescale = true;
-	uint64_t timestamp = 0;
+    bool rescale{true};
+    uint64_t timestamp{}; // defaults to 0
 
 	//* RAII wrapper for getifaddrs
 	class getifaddr_wrapper {
@@ -1318,7 +1368,7 @@ namespace Net {
 			string ipv4, ipv6;
 
 			//? Iteration over all items in getifaddrs() list
-			for (auto* ifa = if_wrap(); ifa != NULL; ifa = ifa->ifa_next) {
+            for (auto* ifa = if_wrap(); ifa != NULL; ifa = ifa->ifa_next) {
 				if (ifa->ifa_addr == NULL) continue;
 				family = ifa->ifa_addr->sa_family;
 				const auto& iface = ifa->ifa_name;
@@ -1351,7 +1401,7 @@ namespace Net {
 					auto& saved_stat = net.at(iface).stat.at(dir);
 					auto& bandwidth = net.at(iface).bandwidth.at(dir);
 
-					uint64_t val = 0;
+                    uint64_t val{}; // defaults to 0
 					try { val = (uint64_t)stoull(readfile(sys_file, "0")); }
 					catch (const std::invalid_argument&) {}
 					catch (const std::out_of_range&) {}
@@ -1472,15 +1522,15 @@ namespace Proc {
 	unordered_flat_map<string, string> uid_user;
 	string current_sort;
 	string current_filter;
-	bool current_rev = false;
+    bool current_rev{}; // defaults to false
 
 	fs::file_time_type passwd_time;
 
 	uint64_t cputimes;
 	int collapse = -1, expand = -1;
-	uint64_t old_cputimes = 0;
-	atomic<int> numpids = 0;
-	int filter_found = 0;
+    uint64_t old_cputimes{};    // defaults to 0
+    atomic<int> numpids{};      // defaults to 0
+    int filter_found{};         // defaults to 0
 
 	detail_container detailed;
 	constexpr size_t KTHREADD = 2;
@@ -1611,7 +1661,7 @@ namespace Proc {
 		const int cmult = (per_core) ? Shared::coreCount : 1;
 		bool got_detailed = false;
 
-		static size_t proc_clear_count = 0;
+        static size_t proc_clear_count{}; // defaults to 0
 
 		//* Use pids from last update if only changing filter, sorting or tree options
 		if (no_update and not current_procs.empty()) {
@@ -1669,6 +1719,7 @@ namespace Proc {
 			for (const auto& d: fs::directory_iterator(Shared::procPath)) {
 				if (Runner::stopping)
 					return current_procs;
+
 				if (pread.is_open()) pread.close();
 
 				const string pid_str = d.path().filename();
@@ -1684,7 +1735,7 @@ namespace Proc {
 
 				//? Check if pid already exists in current_procs
 				auto find_old = rng::find(current_procs, pid, &proc_info::pid);
-				bool no_cache = false;
+                bool no_cache{}; // defaults to false
 				if (find_old == current_procs.end()) {
 					current_procs.push_back({pid});
 					find_old = current_procs.end() - 1;
@@ -1929,11 +1980,11 @@ namespace Proc {
 			tree_sort(tree_procs, sorting, reverse, index, current_procs.size());
 
 			//? Add tree begin symbol to first item if childless
-			if (tree_procs.front().children.empty())
+			if (tree_procs.size() > 0 and tree_procs.front().children.empty() and tree_procs.front().entry.get().prefix.size() >= 8)
 				tree_procs.front().entry.get().prefix.replace(tree_procs.front().entry.get().prefix.size() - 8, 8, " ┌─ ");
 
 			//? Add tree terminator symbol to last item if childless
-			if (tree_procs.back().children.empty())
+			if (tree_procs.size() > 0 and tree_procs.back().children.empty() and tree_procs.back().entry.get().prefix.size() >= 8)
 				tree_procs.back().entry.get().prefix.replace(tree_procs.back().entry.get().prefix.size() - 8, 8, " └─ ");
 
 			//? Final sort based on tree index
@@ -1967,6 +2018,6 @@ namespace Tools {
 			catch (const std::invalid_argument&) {}
 			catch (const std::out_of_range&) {}
 		}
-		throw std::runtime_error("Failed get uptime from from " + (string)Shared::procPath + "/uptime");
+        throw std::runtime_error("Failed get uptime from from " + string{Shared::procPath} + "/uptime");
 	}
 }
